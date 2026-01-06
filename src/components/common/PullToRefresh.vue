@@ -22,16 +22,34 @@ const PULL_THRESHOLD = 80
 const MAX_PULL = 120
 
 let startY = 0
-let scrollTop = 0
+let scrollContainer: HTMLElement | null = null
+
+// Find the actual scroll container (parent with overflow-y: auto/scroll)
+function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
+  if (!el) return null
+  let parent = el.parentElement
+  while (parent) {
+    const style = getComputedStyle(parent)
+    if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+      return parent
+    }
+    parent = parent.parentElement
+  }
+  return null
+}
+
+function getScrollTop(): number {
+  if (scrollContainer) {
+    return scrollContainer.scrollTop
+  }
+  return 0
+}
 
 function handleTouchStart(e: TouchEvent) {
   if (isRefreshing.value || props.loading) return
 
-  const container = containerRef.value
-  if (!container) return
-
-  scrollTop = container.scrollTop
-  if (scrollTop > 0) return
+  const currentScrollTop = getScrollTop()
+  if (currentScrollTop > 0) return
 
   startY = e.touches[0].clientY
   isPulling.value = true
@@ -40,8 +58,8 @@ function handleTouchStart(e: TouchEvent) {
 function handleTouchMove(e: TouchEvent) {
   if (!isPulling.value || isRefreshing.value || props.loading) return
 
-  const container = containerRef.value
-  if (!container || container.scrollTop > 0) {
+  const currentScrollTop = getScrollTop()
+  if (currentScrollTop > 0) {
     isPulling.value = false
     pullDistance.value = 0
     return
@@ -54,6 +72,10 @@ function handleTouchMove(e: TouchEvent) {
     e.preventDefault()
     // Apply resistance
     pullDistance.value = Math.min(diff * 0.5, MAX_PULL)
+  } else {
+    // User is scrolling down, cancel pull-to-refresh
+    isPulling.value = false
+    pullDistance.value = 0
   }
 }
 
@@ -71,10 +93,10 @@ async function handleTouchEnd() {
   pullDistance.value = 0
 }
 
-// Watch for loading prop to reset
 onMounted(() => {
   const container = containerRef.value
   if (container) {
+    scrollContainer = findScrollContainer(container)
     container.addEventListener('touchstart', handleTouchStart, { passive: true })
     container.addEventListener('touchmove', handleTouchMove, { passive: false })
     container.addEventListener('touchend', handleTouchEnd, { passive: true })
@@ -88,6 +110,7 @@ onUnmounted(() => {
     container.removeEventListener('touchmove', handleTouchMove)
     container.removeEventListener('touchend', handleTouchEnd)
   }
+  scrollContainer = null
 })
 
 // Reset when loading finishes
@@ -134,8 +157,7 @@ defineExpose({
 
 <style scoped>
 .pull-to-refresh-container {
-  @apply relative overflow-auto h-full;
-  -webkit-overflow-scrolling: touch;
+  @apply relative h-full;
 }
 
 .pull-indicator {

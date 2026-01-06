@@ -1,9 +1,14 @@
 import { Capacitor } from '@capacitor/core'
+import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
+import { initialSchema } from './migrations/001_initial'
 
 const STORAGE_KEY = 'iam_data'
+const DB_NAME = 'iam_db'
 
 let isInitialized = false
 let isNative = false
+let sqliteConnection: SQLiteConnection | null = null
+let db_native: SQLiteDBConnection | null = null
 
 // In-memory storage for web fallback
 interface StorageData {
@@ -110,9 +115,14 @@ function parseSimpleQuery(sql: string, _values: any[] = []): { table: string; ty
 // Database interface for both native and web
 export const db = {
   async query<T>(sql: string, values: any[] = []): Promise<T[]> {
-    if (isNative) {
-      // Native SQLite implementation would go here
-      return []
+    if (isNative && db_native) {
+      try {
+        const result = await db_native.query(sql, values)
+        return (result.values || []) as T[]
+      } catch (e) {
+        console.error('Native SQLite query error:', e, sql, values)
+        return []
+      }
     }
 
     // Web localStorage fallback
@@ -206,9 +216,17 @@ export const db = {
   },
 
   async run(sql: string, values: any[] = []): Promise<{ changes: number; lastInsertId: number }> {
-    if (isNative) {
-      // Native SQLite implementation
-      return { changes: 0, lastInsertId: 0 }
+    if (isNative && db_native) {
+      try {
+        const result = await db_native.run(sql, values)
+        return {
+          changes: result.changes?.changes || 0,
+          lastInsertId: result.changes?.lastId || 0
+        }
+      } catch (e) {
+        console.error('Native SQLite run error:', e, sql, values)
+        return { changes: 0, lastInsertId: 0 }
+      }
     }
 
     const parsed = parseSimpleQuery(sql, values)
@@ -298,16 +316,49 @@ export async function initDatabase(): Promise<void> {
 
   if (!isNative) {
     console.log('Running on web platform - using localStorage fallback')
-    // Initialize storage if needed
     loadStorage()
     isInitialized = true
     return
   }
 
-  // Native SQLite initialization would go here
-  // For now, just mark as initialized
-  isInitialized = true
-  console.log('Database initialized')
+  try {
+    // Initialize SQLite connection
+    sqliteConnection = new SQLiteConnection(CapacitorSQLite)
+
+    // Check connection consistency (required for iOS)
+    const retCC = await sqliteConnection.checkConnectionsConsistency()
+    const isConn = (await sqliteConnection.isConnection(DB_NAME, false)).result
+
+    if (retCC.result && isConn) {
+      db_native = await sqliteConnection.retrieveConnection(DB_NAME, false)
+    } else {
+      db_native = await sqliteConnection.createConnection(
+        DB_NAME,
+        false,
+        'no-encryption',
+        1,
+        false
+      )
+    }
+
+    await db_native.open()
+
+    // Run migrations - split by semicolons and execute each statement
+    const statements = initialSchema
+      .split(';')
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+
+    for (const statement of statements) {
+      await db_native.execute(statement + ';')
+    }
+
+    isInitialized = true
+    console.log('Native SQLite database initialized successfully')
+  } catch (e) {
+    console.error('Failed to initialize native SQLite:', e)
+    throw e
+  }
 }
 
 /**
